@@ -1,0 +1,15 @@
+[project]
+name = "email-archiver"
+version = "0.1.0"
+description = "IMAP email archiver for iCloud and Yahoo — single persistent connection, zero dependencies"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "Justin Lacerte" }]
+
+[project.scripts]
+email-archiver = "email_archiver.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"

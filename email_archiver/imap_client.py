@@ -135,7 +135,7 @@ class IMAPClient:
         if not uids:
             return
         uid_set = b",".join(uids)
-        self._conn.uid("STORE", uid_set, "+FLAGS", "\\Deleted")
+        self._conn.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)")
 
     def expunge(self) -> None:
         """EXPUNGE — permanently remove messages marked \\Deleted."""

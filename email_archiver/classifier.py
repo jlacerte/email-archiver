@@ -40,6 +40,29 @@ ARCHIVE_FROM: List[str] = [
     r"promotions@.*bnc", r"@mail-corpo\.ia\.ca", r"@opinion\.panalyticsgroup",
     # Coupa supplier portal
     r"@coupa\.com",
+    # Telecom / service providers
+    r"@i\.telus\.com", r"telusservice@", r"telus-team@",
+    # Education / government
+    r"@cscv\.qc\.ca", r"@cssd\.gouv\.qc\.ca", r"@csdraveurs",
+    # Financial — automated notifications
+    r"@payments\.interac\.ca", r"@fondsftq\.com",
+    r"telnat@bnc\.ca", r"@marketing\.bnc\.ca",
+    # Newsletters / marketing — Yahoo
+    r"@hello\.teachable\.com", r"@livecode\.com", r"@sitepoint\.com",
+    r"@info\.pentoncem\.com", r"@insideapple\.apple\.com",
+    r"@go\.sage\.com", r"accounts@firefox\.com",
+    r"@gitcoin\.co", r"@filemaker\.com",
+    r"@cfcpc\.ca", r"@koolreport\.com", r"@monkeybreadsoftware",
+    r"@xojo\.com", r"@caaquebec\.com",
+    r"@intercom-mail\.com", r"@hello\.scribd\.com",
+    r"@stackblitz\.com",
+    # Newsletters / marketing — iCloud
+    r"@greengeeks\.com", r"@lists\.quebecloisirs\.com",
+    r"@eff\.org", r"loyalty@shinybud",
+    r"verified@supplier\.coupa", r"cpanel@",
+    r"@info\.intact\.ca", r"aws-marketing.*@amazon",
+    r"@tommorrison\.uk", r"communication@apchq",
+    r"infolettre@renaud-bray",
 ]
 
 # ---------------------------------------------------------------------------

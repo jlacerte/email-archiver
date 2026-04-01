@@ -20,7 +20,8 @@ def setup_logging(account: str, level: int = logging.INFO) -> logging.Logger:
     """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    logger = logging.getLogger(f"email_archiver.{account}")
+    # Configure the root email_archiver logger so IMAPClient messages also appear
+    logger = logging.getLogger("email_archiver")
     logger.setLevel(level)
 
     # Avoid duplicate handlers on repeated calls

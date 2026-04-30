@@ -10,6 +10,7 @@ Read-only on the server: no COPY, no DELETE, no EXPUNGE, no flag changes.
 
 import csv
 import email
+import email.message
 import email.utils
 import json
 import logging

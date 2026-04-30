@@ -102,5 +102,60 @@ class TestIMAPClientConnect(unittest.TestCase):
         self.assertIsNone(client._conn)
 
 
+class TestFetchMessage(unittest.TestCase):
+
+    @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")
+    def test_fetch_message_success(self, mock_ssl):
+        """fetch_message returns a parsed email.message.Message on success."""
+        raw_email = (
+            b"From: billing@anthropic.com\r\n"
+            b"Subject: Your invoice\r\n"
+            b"Date: Thu, 01 Apr 2026 10:00:00 +0000\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Here is your invoice.\r\n"
+        )
+        mock_conn = MagicMock()
+        mock_conn.uid.return_value = ("OK", [
+            (b"1 (UID 4532 BODY[] {123}", raw_email),
+            b")",
+        ])
+        mock_ssl.return_value = mock_conn
+
+        client = IMAPClient("imap.test.com", 993, "user", "pass")
+        client.connect()
+        msg = client.fetch_message(b"4532")
+
+        self.assertIsNotNone(msg)
+        self.assertIn("anthropic", msg["From"])
+        self.assertEqual(msg["Subject"], "Your invoice")
+
+    @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")
+    def test_fetch_message_failure_returns_none(self, mock_ssl):
+        """fetch_message returns None when FETCH fails."""
+        mock_conn = MagicMock()
+        mock_conn.uid.return_value = ("NO", [b"FETCH failed"])
+        mock_ssl.return_value = mock_conn
+
+        client = IMAPClient("imap.test.com", 993, "user", "pass")
+        client.connect()
+        msg = client.fetch_message(b"9999")
+
+        self.assertIsNone(msg)
+
+    @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")
+    def test_fetch_message_exception_returns_none(self, mock_ssl):
+        """fetch_message returns None when FETCH raises an exception."""
+        mock_conn = MagicMock()
+        mock_conn.uid.side_effect = Exception("Connection lost")
+        mock_ssl.return_value = mock_conn
+
+        client = IMAPClient("imap.test.com", 993, "user", "pass")
+        client.connect()
+        msg = client.fetch_message(b"9999")
+
+        self.assertIsNone(msg)
+
+
 if __name__ == "__main__":
     unittest.main()

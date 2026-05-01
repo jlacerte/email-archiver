@@ -13,13 +13,11 @@ email-archiver is a Python IMAP email archiver for Gmail, iCloud, and Yahoo. Use
 /opt/homebrew/bin/python3.13 -m unittest discover -s tests -v
 
 # CLI commands
-/opt/homebrew/bin/python3.13 -m email_archiver preview yahoo       # read-only, 100 emails
+/opt/homebrew/bin/python3.13 -m email_archiver preview yahoo       # read-only, show classify() destinations
 /opt/homebrew/bin/python3.13 -m email_archiver preview icloud -n 20 # read-only, 20 emails
-/opt/homebrew/bin/python3.13 -m email_archiver archive yahoo        # archive for real
-/opt/homebrew/bin/python3.13 -m email_archiver archive icloud
-/opt/homebrew/bin/python3.13 -m email_archiver organize yahoo       # sort inbox into folders
+/opt/homebrew/bin/python3.13 -m email_archiver organize yahoo       # sort inbox into folders + archive noise
 /opt/homebrew/bin/python3.13 -m email_archiver stats all
-/opt/homebrew/bin/python3.13 -m email_archiver invoices scan gmail    # scan for invoices (read-only)
+/opt/homebrew/bin/python3.13 -m email_archiver invoices scan gmail    # scan invoice folders (read-only)
 /opt/homebrew/bin/python3.13 -m email_archiver invoices download gmail --month 2026-04  # download PDFs
 ```
 
@@ -27,7 +25,7 @@ System Python is 3.9 (`/usr/bin/python3`). Use Homebrew Python 3.13 at `/opt/hom
 
 ## Architecture
 
-`cli.py` → delegates to `archiver.py` (archive/preview/stats), `organizer.py` (organize), `invoice_scanner.py` (invoices scan), or `invoice_downloader.py` (invoices download). All use `IMAPClient` (imap_client.py) for a single persistent IMAP connection, `classifier.py` for pattern-based email classification, and `config.py` for provider configs + macOS Keychain credential retrieval.
+`cli.py` → delegates to `archiver.py` (preview/stats), `organizer.py` (organize), `invoice_scanner.py` (invoices scan), or `invoice_downloader.py` (invoices download). All use `IMAPClient` (imap_client.py) for a single persistent IMAP connection, `classifier.py` for unified email classification, and `config.py` for provider configs + macOS Keychain credential retrieval. `organize` is the single command that sorts emails into named folders AND archives noise — there is no separate `archive` command.
 
 ## Safety Invariants (non-negotiable)
 
@@ -45,4 +43,17 @@ System Python is 3.9 (`/usr/bin/python3`). Use Homebrew Python 3.13 at `/opt/hom
 
 ## Classification
 
-`classifier.py`: ~80 precompiled regex patterns (from-address + subject). Safe default — `should_archive()` returns False (keep) if no pattern matches. `organizer.py`: ~100 categorization patterns mapping senders to IMAP folder names.
+Unified classifier in `classifier.py`. Single entry point: `classify(from_addr, subject) → str`.
+
+Returns:
+- Named folder (e.g. `"Financier/BNC"`, `"Travail/Deslauriers"`) — move to that IMAP folder
+- `"_archive"` — move to provider's archive folder (generic noise)
+- `""` — stay in INBOX (safe default: no match = keep)
+
+Evaluation order (first match wins): Self-sent → Travail → Gouvernement → Agriculture → Financier → Assurance → Comptabilité → Éducation → Personnel → Factures → Dev-Tech → Formations → Social → Crypto → Newsletters → Notifications → Spam → Generic noise → Default (keep).
+
+Key principle: specific sender patterns (steps 1–17) have priority over generic noise patterns (step 18). An email from `noreply@bnc.ca` matches `bnc.ca` → `Financier/BNC`, not `noreply@` → `_archive`.
+
+From-address matching: substring (`in` operator), case-insensitive. Subject matching: compiled regex, case-insensitive (only for generic noise at step 18b).
+
+Legacy wrappers `should_archive()` and `categorize()` delegate to `classify()`.

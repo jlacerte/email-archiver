@@ -74,14 +74,23 @@ def run_organize(account: str) -> Dict[str, int]:
         # Phase 1: classify all emails
         log.info("Phase 1: Classifying %d emails...", len(all_uids))
         uid_to_dest: Dict[bytes, str] = {}
+        consecutive_fetch_errors = 0
         for i in range(0, len(all_uids), batch_size):
             batch = all_uids[i : i + batch_size]
             try:
                 headers = client.fetch_headers(batch)
             except Exception as e:
                 log.error("FETCH error batch %d: %s", i, e)
+                consecutive_fetch_errors += 1
                 errors += 1
+                if consecutive_fetch_errors >= provider["max_consecutive_errors"]:
+                    log.error(
+                        "CIRCUIT BREAKER: %d consecutive FETCH errors. STOPPING.",
+                        consecutive_fetch_errors,
+                    )
+                    break
                 continue
+            consecutive_fetch_errors = 0
 
             for uid, from_addr, subject in headers:
                 dest = classify(from_addr, subject)

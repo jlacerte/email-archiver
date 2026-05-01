@@ -9,6 +9,7 @@ Key design decisions:
   - BODY.PEEK for header reads (does not mark as \\Seen)
 """
 
+import email
 import email.header
 import imaplib
 import logging
@@ -119,6 +120,57 @@ class IMAPClient:
 
         return results
 
+    def fetch_message(self, uid: bytes) -> Optional["email.message.Message"]:
+        """Fetch the complete message (headers + body + attachments).
+
+        Uses BODY.PEEK[] to avoid marking the message as \\Seen.
+        Returns a parsed email.message.Message, or None on failure.
+        """
+        assert self._conn is not None, "Not connected"
+        try:
+            typ, fetch_data = self._conn.uid("FETCH", uid, "(BODY.PEEK[])")
+            if typ != "OK":
+                logger.error("UID FETCH failed for %s: %s", uid.decode(), fetch_data)
+                return None
+
+            for item in fetch_data:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    raw_bytes = item[1]
+                    if isinstance(raw_bytes, bytes):
+                        return email.message_from_bytes(raw_bytes)
+
+            logger.error("No message body found in FETCH response for UID %s", uid.decode())
+            return None
+        except Exception as e:
+            logger.error("FETCH exception for UID %s: %s", uid.decode(), e)
+            return None
+
+    def list_folders(self, pattern: str = "*") -> List[str]:
+        """List mailbox folder names matching an IMAP pattern.
+
+        Example patterns:
+          "*"           — all folders
+          "Factures/*"  — all sub-folders under Factures
+        Returns sorted list of folder name strings.
+        """
+        assert self._conn is not None, "Not connected"
+        typ, folder_data = self._conn.list('""', pattern)
+        if typ != "OK" or not folder_data:
+            return []
+
+        folders: List[str] = []
+        for item in folder_data:
+            if isinstance(item, bytes):
+                # Parse IMAP LIST response: (\flags) "/" "folder name"
+                match = re.search(rb'"([^"]+)"$', item)
+                if match:
+                    folders.append(
+                        match.group(1).decode("utf-8", errors="replace")
+                    )
+        folders.sort()
+        logger.info("LIST '%s': %d folders found", pattern, len(folders))
+        return folders
+
     def archive_uid(self, uid: bytes, archive_folder: str) -> bool:
         """COPY uid to archive folder, verify OK.
 
@@ -126,7 +178,9 @@ class IMAPClient:
         This separation ensures we never delete without a confirmed copy.
         """
         assert self._conn is not None, "Not connected"
-        typ, _ = self._conn.uid("COPY", uid, archive_folder)
+        # Quote folder names for IMAP (spaces cause parse errors)
+        quoted = f'"{archive_folder}"'
+        typ, _ = self._conn.uid("COPY", uid, quoted)
         return typ == "OK"
 
     def mark_deleted(self, uids: List[bytes]) -> None:

@@ -220,8 +220,14 @@ class TestClassifyNamedFolders(unittest.TestCase):
     def test_factures_aquavoice(self):
         self.assertEqual(_c("billing@aquavoice.com"), "Factures/AquaVoice")
 
+    def test_factures_aquavoice_stripe(self):
+        self.assertEqual(_c("receipt@acct_1onzww.stripe.com"), "Factures/AquaVoice")
+
     def test_factures_fal(self):
         self.assertEqual(_c("billing@fal.ai"), "Factures/fal")
+
+    def test_factures_fal_stripe(self):
+        self.assertEqual(_c("receipt@acct_1hphnx.stripe.com"), "Factures/fal")
 
     def test_factures_xplore(self):
         self.assertEqual(_c("noreply@xplore.ca"), "Factures/Xplore")

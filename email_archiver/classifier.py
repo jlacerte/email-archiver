@@ -231,7 +231,7 @@ def classify(from_addr: str, subject: str) -> str:
         return "Financier/PayPal"
     if "revenuquebec" in f or "servicesquebec" in f:
         return "Financier/RevenuQC"
-    if "hydro" in f:
+    if "hydroquebec" in f:
         return "Financier/Hydro-Quebec"
     if "caaquebec" in f:
         return "Financier/CAA"
@@ -287,9 +287,9 @@ def classify(from_addr: str, subject: str) -> str:
         return "Factures/Anthropic"
     if "google.com" in f and any(x in f for x in ["payment", "invoice", "workspace"]):
         return "Factures/Google"
-    if "aquavoice.com" in f:
+    if "aquavoice.com" in f or "acct_1onzww" in f:
         return "Factures/AquaVoice"
-    if "fal.ai" in f:
+    if "fal.ai" in f or "acct_1hphnx" in f:
         return "Factures/fal"
     if "xplore.ca" in f:
         return "Factures/Xplore"

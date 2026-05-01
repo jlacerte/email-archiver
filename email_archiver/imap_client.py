@@ -145,6 +145,32 @@ class IMAPClient:
             logger.error("FETCH exception for UID %s: %s", uid.decode(), e)
             return None
 
+    def list_folders(self, pattern: str = "*") -> List[str]:
+        """List mailbox folder names matching an IMAP pattern.
+
+        Example patterns:
+          "*"           — all folders
+          "Factures/*"  — all sub-folders under Factures
+        Returns sorted list of folder name strings.
+        """
+        assert self._conn is not None, "Not connected"
+        typ, folder_data = self._conn.list('""', pattern)
+        if typ != "OK" or not folder_data:
+            return []
+
+        folders: List[str] = []
+        for item in folder_data:
+            if isinstance(item, bytes):
+                # Parse IMAP LIST response: (\flags) "/" "folder name"
+                match = re.search(rb'"([^"]+)"$', item)
+                if match:
+                    folders.append(
+                        match.group(1).decode("utf-8", errors="replace")
+                    )
+        folders.sort()
+        logger.info("LIST '%s': %d folders found", pattern, len(folders))
+        return folders
+
     def archive_uid(self, uid: bytes, archive_folder: str) -> bool:
         """COPY uid to archive folder, verify OK.
 

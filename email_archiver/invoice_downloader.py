@@ -176,48 +176,62 @@ def run_download(account: str, month: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         client.connect()
-        client.select_folder(provider["source_folder"])
 
+        # Group invoices by folder to minimize SELECT commands
+        folder_groups: Dict[str, List[Dict[str, Any]]] = {}
         for inv in target_invoices:
-            uid = inv["uid"].encode() if isinstance(inv["uid"], str) else inv["uid"]
-            provider_name = inv["provider"]
-            provider_dir = month_dir / provider_name
+            folder = inv.get("folder", provider["source_folder"])
+            folder_groups.setdefault(folder, []).append(inv)
 
-            if not inv.get("has_pdf"):
-                log.info("[NO-PDF] %s | %s", provider_name, inv["subject"][:50])
-                no_pdf += 1
-                csv_rows.append({
-                    "date": inv.get("date", ""),
-                    "fournisseur": provider_name,
-                    "sujet": inv.get("subject", ""),
-                    "fichier_pdf": "",
-                    "source_email": inv.get("from", ""),
-                })
-                continue
+        current_folder = ""
 
-            msg = client.fetch_message(uid)
-            if msg is None:
-                log.error("[ERROR] Failed to fetch UID %s", inv["uid"])
-                errors += 1
-                continue
+        for folder, folder_invs in folder_groups.items():
+            # Select the correct folder (UIDs are folder-specific in IMAP)
+            if folder != current_folder:
+                client.select_folder(folder)
+                current_folder = folder
+                log.info("Selected folder '%s' for %d invoices", folder, len(folder_invs))
 
-            saved = extract_and_save_pdfs(
-                msg, inv.get("date", ""), provider_name, provider_dir,
-            )
+            for inv in folder_invs:
+                uid = inv["uid"].encode() if isinstance(inv["uid"], str) else inv["uid"]
+                provider_name = inv["provider"]
+                provider_dir = month_dir / provider_name
 
-            if saved:
-                downloaded += len(saved)
-                for filename in saved:
+                if not inv.get("has_pdf"):
+                    log.info("[NO-PDF] %s | %s", provider_name, inv["subject"][:50])
+                    no_pdf += 1
                     csv_rows.append({
                         "date": inv.get("date", ""),
                         "fournisseur": provider_name,
                         "sujet": inv.get("subject", ""),
-                        "fichier_pdf": filename,
+                        "fichier_pdf": "",
                         "source_email": inv.get("from", ""),
                     })
-            else:
-                skipped += 1
-                log.info("[SKIP] %s | %s (already downloaded)", provider_name, inv["subject"][:50])
+                    continue
+
+                msg = client.fetch_message(uid)
+                if msg is None:
+                    log.error("[ERROR] Failed to fetch UID %s", inv["uid"])
+                    errors += 1
+                    continue
+
+                saved = extract_and_save_pdfs(
+                    msg, inv.get("date", ""), provider_name, provider_dir,
+                )
+
+                if saved:
+                    downloaded += len(saved)
+                    for filename in saved:
+                        csv_rows.append({
+                            "date": inv.get("date", ""),
+                            "fournisseur": provider_name,
+                            "sujet": inv.get("subject", ""),
+                            "fichier_pdf": filename,
+                            "source_email": inv.get("from", ""),
+                        })
+                else:
+                    skipped += 1
+                    log.info("[SKIP] %s | %s (already downloaded)", provider_name, inv["subject"][:50])
 
     except Exception as e:
         log.error("Unexpected error during download: %s", e)

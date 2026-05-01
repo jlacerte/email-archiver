@@ -10,6 +10,7 @@ Read-only: no COPY, no DELETE, no EXPUNGE, no flag changes.
 
 import csv
 import email
+import email.message
 import email.utils
 import json
 import logging
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from email_archiver.config import get_password, get_provider
-from email_archiver.imap_client import IMAPClient
+from email_archiver.imap_client import IMAPClient, _decode_header_value
 from email_archiver.logging_setup import setup_logging
 
 logger = logging.getLogger("email_archiver")
@@ -40,12 +41,15 @@ INVOICE_FROM_PATTERNS: List[str] = [
     "aquavoice",
     "fal.ai",
     "telus",
-    "google.com",
+    "payments-noreply@google.com",
     "hydro",
     "desjardins",
     "interac.ca",
     "paypal",
 ]
+
+# Folder prefixes to scan for already-classified invoices (after organize)
+SCAN_FOLDER_PREFIXES: List[str] = ["Factures", "Financier"]
 
 # Subject regexes that indicate an invoice/receipt/billing email
 INVOICE_SUBJECT_STRINGS: List[str] = [
@@ -68,7 +72,7 @@ _INVOICE_SUBJECT_PATTERNS = [
 # Provider name normalization: from-address substring -> display name
 PROVIDER_MAP: Dict[str, str] = {
     "anthropic": "Anthropic",
-    "google.com": "Google",
+    "payments-noreply@google.com": "Google",
     "xplore.ca": "Xplore",
     "staples": "BureauEnGros",
     "greengeeks": "GreenGeeks",
@@ -284,11 +288,199 @@ def _write_reports(report: Dict[str, Any], account: str) -> Tuple[Path, Path]:
     return json_path, txt_path
 
 
-def run_scan(account: str) -> Dict[str, Any]:
-    """Run the two-pass invoice scan (read-only).
+def _scan_inbox(
+    client: IMAPClient,
+    folder: str,
+    batch_size: int,
+    max_errors: int,
+    log: logging.Logger,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Scan INBOX with two-pass approach: classify headers, then fetch matches.
 
-    Pass 1: fetch headers for all UIDs, classify by patterns.
-    Pass 2: fetch full messages for matches only, check for PDF attachments.
+    Returns (invoices_list, total_emails_scanned).
+    """
+    client.select_folder(folder)
+    all_uids = client.search_all_uids()
+    total = len(all_uids)
+    consecutive_errors = 0
+
+    # --- Pass 1: headers only (lightweight) ---
+    log.info("INBOX Pass 1: Fetching headers for %d emails...", total)
+    invoice_uids: List[Tuple[bytes, str, str]] = []
+
+    for i in range(0, len(all_uids), batch_size):
+        batch = all_uids[i : i + batch_size]
+        try:
+            headers = client.fetch_headers(batch)
+            consecutive_errors = 0
+        except Exception as e:
+            consecutive_errors += 1
+            log.error("FETCH headers error batch %d: %s", i, e)
+            if consecutive_errors >= max_errors:
+                log.error(
+                    "CIRCUIT BREAKER: %d consecutive errors. STOPPING.",
+                    consecutive_errors,
+                )
+                break
+            continue
+
+        for uid, from_addr, subject in headers:
+            if is_invoice(from_addr, subject):
+                invoice_uids.append((uid, from_addr, subject))
+
+        if (i + len(batch)) % 500 == 0 or (i + len(batch)) >= len(all_uids):
+            log.info(
+                "  Pass 1: %d/%d scanned, %d invoices found so far",
+                i + len(batch), len(all_uids), len(invoice_uids),
+            )
+
+    log.info(
+        "INBOX Pass 1 done: %d candidates out of %d emails.",
+        len(invoice_uids), total,
+    )
+
+    # --- Pass 2: full messages for candidates ---
+    log.info("INBOX Pass 2: Fetching full messages for %d candidates...", len(invoice_uids))
+    invoices: List[Dict[str, Any]] = []
+    consecutive_errors = 0
+
+    for uid, from_addr, subject in invoice_uids:
+        msg = client.fetch_message(uid)
+        if msg is None:
+            consecutive_errors += 1
+            if consecutive_errors >= max_errors:
+                log.error(
+                    "CIRCUIT BREAKER: %d consecutive FETCH errors. STOPPING.",
+                    consecutive_errors,
+                )
+                break
+            continue
+
+        consecutive_errors = 0
+        date_str = _extract_date(msg)
+        provider_name = resolve_provider(from_addr)
+        pdf_info = extract_pdf_info(msg)
+
+        invoices.append({
+            "uid": uid.decode() if isinstance(uid, bytes) else str(uid),
+            "from": from_addr,
+            "provider": provider_name,
+            "subject": subject,
+            "date": date_str,
+            "has_pdf": pdf_info["has_pdf"],
+            "link_only": pdf_info["link_only"],
+            "pdf_files": pdf_info["pdf_files"],
+            "folder": folder,
+        })
+        log.info(
+            "[INVOICE] %s | %s | %s | PDF=%s",
+            provider_name, from_addr, subject[:50],
+            "yes" if pdf_info["has_pdf"] else "no",
+        )
+
+    return invoices, total
+
+
+def _provider_from_folder(folder: str) -> Optional[str]:
+    """Derive provider name from a Factures/ProviderName folder path.
+
+    Returns the provider part (e.g., "Anthropic" from "Factures/Anthropic"),
+    or None if the folder doesn't match the pattern.
+    """
+    parts = folder.split("/")
+    if len(parts) >= 2 and parts[0] in ("Factures", "Financier"):
+        return parts[-1]
+    return None
+
+
+def _scan_folder(
+    client: IMAPClient,
+    folder: str,
+    max_errors: int,
+    log: logging.Logger,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Scan a pre-classified folder (Factures/*, Financier/*).
+
+    All emails in these folders are already invoices — no classification needed.
+    Provider name is derived from the folder name (e.g., Factures/AquaVoice
+    → "AquaVoice"), which handles cases where emails come through Stripe or
+    other payment processors.
+
+    Returns (invoices_list, total_emails_in_folder).
+    """
+    count = client.select_folder(folder)
+    if count == 0:
+        return [], 0
+
+    all_uids = client.search_all_uids()
+    total = len(all_uids)
+    consecutive_errors = 0
+    invoices: List[Dict[str, Any]] = []
+
+    # Use folder name as provider (trusted — organizer already classified)
+    folder_provider = _provider_from_folder(folder)
+
+    log.info("Scanning folder '%s': %d emails...", folder, total)
+
+    for uid in all_uids:
+        msg = client.fetch_message(uid)
+        if msg is None:
+            consecutive_errors += 1
+            if consecutive_errors >= max_errors:
+                log.error(
+                    "CIRCUIT BREAKER: %d consecutive FETCH errors in '%s'. STOPPING.",
+                    consecutive_errors, folder,
+                )
+                break
+            continue
+
+        consecutive_errors = 0
+
+        from_addr = _decode_header_value(msg.get("From", "")).lower()
+        subject = _decode_header_value(msg.get("Subject", ""))
+        date_str = _extract_date(msg)
+        # Prefer folder-derived provider (handles Stripe intermediaries)
+        provider_name = folder_provider or resolve_provider(from_addr)
+        pdf_info = extract_pdf_info(msg)
+
+        invoices.append({
+            "uid": uid.decode() if isinstance(uid, bytes) else str(uid),
+            "from": from_addr,
+            "provider": provider_name,
+            "subject": subject,
+            "date": date_str,
+            "has_pdf": pdf_info["has_pdf"],
+            "link_only": pdf_info["link_only"],
+            "pdf_files": pdf_info["pdf_files"],
+            "folder": folder,
+        })
+        log.info(
+            "[INVOICE] %s | %s | %s | PDF=%s | folder=%s",
+            provider_name, from_addr, subject[:50],
+            "yes" if pdf_info["has_pdf"] else "no", folder,
+        )
+
+    return invoices, total
+
+
+def _extract_date(msg: email.message.Message) -> str:
+    """Extract date from email headers as YYYY-MM-DD string."""
+    date_header = msg.get("Date", "")
+    if date_header:
+        try:
+            dt = email.utils.parsedate_to_datetime(date_header)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return ""
+
+
+def run_scan(account: str) -> Dict[str, Any]:
+    """Run invoice scan across INBOX and pre-classified folders (read-only).
+
+    1. Scan INBOX with two-pass approach (classify headers → fetch matches)
+    2. Discover Factures/* and Financier/* folders (from organize)
+    3. Scan each — all emails there are already invoices, just check for PDFs
 
     Returns the scan report dict.
     """
@@ -309,106 +501,37 @@ def run_scan(account: str) -> Dict[str, Any]:
     )
 
     invoices: List[Dict[str, Any]] = []
-    consecutive_errors = 0
     total_scanned = 0
 
     try:
         client.connect()
-        client.select_folder(provider["source_folder"])
-        all_uids = client.search_all_uids()
-        total_scanned = len(all_uids)
 
-        # --- Pass 1: headers only (lightweight) ---
-        log.info("Pass 1: Fetching headers for %d emails...", total_scanned)
-        invoice_uids: List[Tuple[bytes, str, str]] = []  # (uid, from_addr, subject)
-
-        for i in range(0, len(all_uids), batch_size):
-            batch = all_uids[i : i + batch_size]
-            try:
-                headers = client.fetch_headers(batch)
-                consecutive_errors = 0
-            except Exception as e:
-                consecutive_errors += 1
-                log.error("FETCH headers error batch %d: %s", i, e)
-                if consecutive_errors >= max_errors:
-                    log.error(
-                        "CIRCUIT BREAKER: %d consecutive errors. STOPPING.",
-                        consecutive_errors,
-                    )
-                    break
-                continue
-
-            for uid, from_addr, subject in headers:
-                if is_invoice(from_addr, subject):
-                    invoice_uids.append((uid, from_addr, subject))
-
-            if (i + len(batch)) % 500 == 0 or (i + len(batch)) >= len(all_uids):
-                log.info(
-                    "  Pass 1: %d/%d scanned, %d invoices found so far",
-                    i + len(batch), len(all_uids), len(invoice_uids),
-                )
-
-        log.info(
-            "Pass 1 done: %d invoice candidates out of %d emails.",
-            len(invoice_uids), total_scanned,
+        # --- Phase 1: Scan INBOX (two-pass: classify then fetch) ---
+        inbox_invoices, inbox_total = _scan_inbox(
+            client, provider["source_folder"], batch_size, max_errors, log,
         )
+        invoices.extend(inbox_invoices)
+        total_scanned += inbox_total
 
-        # --- Pass 2: full messages for invoice candidates only ---
-        log.info("Pass 2: Fetching full messages for %d candidates...", len(invoice_uids))
-        consecutive_errors = 0
-        scan_batch_size = 25  # Smaller batches for full messages
+        # --- Phase 2: Discover and scan pre-classified folders ---
+        invoice_folders: List[str] = []
+        for prefix in SCAN_FOLDER_PREFIXES:
+            found = client.list_folders(f"{prefix}/*")
+            invoice_folders.extend(found)
 
-        for i in range(0, len(invoice_uids), scan_batch_size):
-            batch = invoice_uids[i : i + scan_batch_size]
+        if invoice_folders:
+            log.info(
+                "Found %d invoice folders: %s",
+                len(invoice_folders),
+                ", ".join(invoice_folders),
+            )
 
-            for uid, from_addr, subject in batch:
-                msg = client.fetch_message(uid)
-                if msg is None:
-                    consecutive_errors += 1
-                    if consecutive_errors >= max_errors:
-                        log.error(
-                            "CIRCUIT BREAKER: %d consecutive FETCH errors. STOPPING.",
-                            consecutive_errors,
-                        )
-                        break
-                    continue
-
-                consecutive_errors = 0
-
-                # Extract date from email headers
-                date_str = ""
-                date_header = msg.get("Date", "")
-                if date_header:
-                    try:
-                        dt = email.utils.parsedate_to_datetime(date_header)
-                        date_str = dt.strftime("%Y-%m-%d")
-                    except Exception:
-                        date_str = ""
-
-                provider_name = resolve_provider(from_addr)
-                pdf_info = extract_pdf_info(msg)
-
-                invoice_record: Dict[str, Any] = {
-                    "uid": uid.decode() if isinstance(uid, bytes) else str(uid),
-                    "from": from_addr,
-                    "provider": provider_name,
-                    "subject": subject,
-                    "date": date_str,
-                    "has_pdf": pdf_info["has_pdf"],
-                    "link_only": pdf_info["link_only"],
-                    "pdf_files": pdf_info["pdf_files"],
-                }
-
-                invoices.append(invoice_record)
-                log.info(
-                    "[INVOICE] %s | %s | %s | PDF=%s",
-                    provider_name, from_addr, subject[:50],
-                    "yes" if pdf_info["has_pdf"] else "no",
-                )
-
-            # Check if circuit breaker tripped inside inner loop
-            if consecutive_errors >= max_errors:
-                break
+        for folder in invoice_folders:
+            folder_invoices, folder_total = _scan_folder(
+                client, folder, max_errors, log,
+            )
+            invoices.extend(folder_invoices)
+            total_scanned += folder_total
 
     except Exception as e:
         log.error("Unexpected error during scan: %s", e)
@@ -423,8 +546,10 @@ def run_scan(account: str) -> Dict[str, Any]:
 
     log.info("Reports written: %s, %s", json_path, txt_path)
     log.info(
-        "=== INVOICE SCAN END === invoices=%d scanned=%d duration=%ss",
-        len(invoices), total_scanned, duration,
+        "=== INVOICE SCAN END === invoices=%d scanned=%d folders=%d duration=%ss",
+        len(invoices), total_scanned,
+        len(invoice_folders) + 1,  # +1 for INBOX
+        duration,
     )
 
     # Print summary to stdout
@@ -433,6 +558,8 @@ def run_scan(account: str) -> Dict[str, Any]:
     print(f"{'=' * 50}")
     print(f"  Courriels scannés : {total_scanned}")
     print(f"  Factures trouvées : {len(invoices)}")
+    if invoice_folders:
+        print(f"  Dossiers scannés  : INBOX + {len(invoice_folders)} dossiers")
     print()
     for prov_name in sorted(report["providers"].keys()):
         prov = report["providers"][prov_name]

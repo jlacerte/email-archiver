@@ -6,7 +6,10 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
-from email_archiver.invoice_scanner import is_invoice, resolve_provider, extract_pdf_info, build_report
+from email_archiver.invoice_scanner import (
+    is_invoice, resolve_provider, extract_pdf_info, build_report,
+    _provider_from_folder,
+)
 
 
 class TestIsInvoice(unittest.TestCase):
@@ -84,6 +87,31 @@ class TestIsInvoice(unittest.TestCase):
     def test_promo_not_invoice(self):
         self.assertFalse(is_invoice("deals@shop.com", "Save 50% today"))
 
+    def test_google_calendar_not_invoice(self):
+        self.assertFalse(is_invoice(
+            "calendar-notification@google.com",
+            "Notification: AI Exploration Hour",
+        ))
+
+    def test_google_find_my_device_not_invoice(self):
+        self.assertFalse(is_invoice(
+            "noreply-findhub@google.com",
+            "Localisation consultée pour Galaxy A16 5G",
+        ))
+
+    def test_google_accounts_not_invoice(self):
+        self.assertFalse(is_invoice(
+            "accounts.google.com",
+            "Security alert for your Google Account",
+        ))
+
+    def test_google_payments_is_invoice(self):
+        """Specific Google billing address should still match."""
+        self.assertTrue(is_invoice(
+            "payments-noreply@google.com",
+            "Google Workspace subscription",
+        ))
+
 
 class TestResolveProvider(unittest.TestCase):
     """Test provider name resolution from email addresses."""
@@ -120,6 +148,22 @@ class TestResolveProvider(unittest.TestCase):
 
     def test_unknown_provider_subdomain(self):
         self.assertEqual(resolve_provider("billing@e.company.org"), "Company")
+
+
+class TestProviderFromFolder(unittest.TestCase):
+    """Test folder-name-to-provider derivation."""
+
+    def test_factures_folder(self):
+        self.assertEqual(_provider_from_folder("Factures/Anthropic"), "Anthropic")
+
+    def test_financier_folder(self):
+        self.assertEqual(_provider_from_folder("Financier/Desjardins"), "Desjardins")
+
+    def test_inbox_returns_none(self):
+        self.assertIsNone(_provider_from_folder("INBOX"))
+
+    def test_unknown_prefix_returns_none(self):
+        self.assertIsNone(_provider_from_folder("Dev-Tech/GitHub"))
 
 
 class TestExtractPdfInfo(unittest.TestCase):

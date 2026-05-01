@@ -102,6 +102,42 @@ class TestIMAPClientConnect(unittest.TestCase):
         self.assertIsNone(client._conn)
 
 
+class TestListFolders(unittest.TestCase):
+
+    @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")
+    def test_list_folders_returns_sorted_names(self, mock_ssl):
+        mock_conn = MagicMock()
+        mock_conn.list.return_value = ("OK", [
+            b'(\\HasNoChildren) "/" "Factures/Google"',
+            b'(\\HasNoChildren) "/" "Factures/Anthropic"',
+            b'(\\HasNoChildren) "/" "Factures/Xplore"',
+        ])
+        mock_ssl.return_value = mock_conn
+
+        client = IMAPClient("imap.test.com", 993, "user", "pass")
+        client.connect()
+        folders = client.list_folders("Factures/*")
+
+        self.assertEqual(folders, [
+            "Factures/Anthropic",
+            "Factures/Google",
+            "Factures/Xplore",
+        ])
+        mock_conn.list.assert_called_once_with('""', "Factures/*")
+
+    @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")
+    def test_list_folders_empty(self, mock_ssl):
+        mock_conn = MagicMock()
+        mock_conn.list.return_value = ("OK", [None])
+        mock_ssl.return_value = mock_conn
+
+        client = IMAPClient("imap.test.com", 993, "user", "pass")
+        client.connect()
+        folders = client.list_folders("NoSuchPrefix/*")
+
+        self.assertEqual(folders, [])
+
+
 class TestFetchMessage(unittest.TestCase):
 
     @patch("email_archiver.imap_client.imaplib.IMAP4_SSL")

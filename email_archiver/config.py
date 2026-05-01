@@ -22,14 +22,30 @@ from typing import Dict, Any
 # ICLOUD LIMITS:
 #   - More permissive than Yahoo, no documented strict limits
 #   - Still rate-limited if abused
+#
+# GMAIL LIMITS:
+#   - Max 15 simultaneous IMAP connections
+#   - 2500 MB bandwidth per day for IMAP
+#   - Requires App Password (2FA accounts)
+#   - Source: https://support.google.com/mail/answer/7126229
 # ---------------------------------------------------------------------------
 
 PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "gmail": {
+        "host": "imap.gmail.com",
+        "port": 993,
+        "login": "princeorion1@gmail.com",
+        "keychain_service": "email-archiver-gmail",
+        "source_folder": "INBOX",
+        "archive_folder": "[Gmail]/All Mail",
+        "batch_size": 50,
+        "max_consecutive_errors": 3,
+    },
     "icloud": {
         "host": "imap.mail.me.com",
         "port": 993,
         "login": "justinlacerte",
-        "keychain_service": "himalaya-icloud",
+        "keychain_service": "email-archiver-icloud",
         "source_folder": "INBOX",
         "archive_folder": "Archive",
         "batch_size": 50,
@@ -39,7 +55,7 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "host": "imap.mail.yahoo.com",
         "port": 993,
         "login": "justinlacerte@yahoo.ca",
-        "keychain_service": "himalaya-yahoo",
+        "keychain_service": "email-archiver-yahoo",
         "source_folder": "Inbox",  # Yahoo uses "Inbox", not "INBOX"
         "archive_folder": "Archive",
         "batch_size": 50,

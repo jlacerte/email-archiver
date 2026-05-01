@@ -1,5 +1,6 @@
 logs/
 factures/
+reports/
 __pycache__/
 *.pyc
 *.pyo
